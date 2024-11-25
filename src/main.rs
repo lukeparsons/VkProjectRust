@@ -1,6 +1,14 @@
 #![no_main]
 
+mod graphics;
+
 use windows::{core::*, Win32::UI::WindowsAndMessaging::*, Win32::Foundation::*, Win32::System::Console::*};
+
+mod project {
+    pub const APP_NAME: &str = "Vulkan Project Rust";
+    pub const VERSION_MAJOR: u32 = 0;
+    pub const VERSION_MINOR: u32 = 1;
+}
 
 macro_rules! WSTR {
     ($literal_string: literal) => {
@@ -31,6 +39,7 @@ unsafe fn message_box(title: &str, message: &str) {
         MB_OK
     );
 }
+
 unsafe extern "system" fn window_proc(hwnd: HWND, u_msg: u32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
     match u_msg {
         WM_DESTROY => {
@@ -72,11 +81,16 @@ extern "system" fn wWinMain(h_instance: HINSTANCE, _h_prev_instance: HINSTANCE, 
 
         let _ = ShowWindow(hwnd, SHOW_WINDOW_CMD(n_cmd_show));
 
+        let _vk_app: graphics::device::VkApp = match graphics::device::VkApp::new(&hwnd, &h_instance) {
+            Ok(vk_app) => vk_app,
+            Err(e) => { message_box("Vulkan Creation Error", e.as_str()); return -1; }
+        };
+
         let mut msg: MSG = MSG::default();
         while GetMessageW(&mut msg, hwnd, 0, 0).0 > 0 {
             let _ = TranslateMessage(&mut msg);
             DispatchMessageW(&mut msg);
         }
     }
-    0
+    1
 }
