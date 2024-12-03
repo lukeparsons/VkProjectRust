@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ash = { version = "0.38.0", features = ["linked"] }
+derive_more = { version = "1.0.0", features = ["display", "into_iterator"] }
 libc = "0.2.164"
 
 [dependencies.windows]
