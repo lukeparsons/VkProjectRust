@@ -1,39 +1,11 @@
 use crate::graphics::presentation::SurfaceSettings;
+use crate::graphics::vk_app::Result;
 use crate::graphics::{extensions::*, presentation};
 use crate::project;
 use ash::{ext::debug_utils, khr, vk, Entry, Instance};
-use derive_more::Display;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::error::Error;
 use std::ffi::{CStr, CString};
-use windows;
-
-#[derive(Debug, Display)]
-pub struct VkError(String);
-
-impl Error for VkError {}
-
-impl From<vk::Result> for VkError
-{
-    fn from(vk_result: vk::Result) -> Self
-    {
-        let vk_error = vk_result
-            .result()
-            .expect_err("Trying to unwrap successful Vulkan Result as error");
-        VkError(format!("Code {}: {}", vk_error.as_raw().to_string(), vk_error.to_string()))
-    }
-}
-
-impl From<String> for VkError
-{
-    fn from(value: String) -> Self { VkError(value) }
-}
-
-impl From<&str> for VkError
-{
-    fn from(value: &str) -> Self { VkError(value.to_string()) }
-}
 
 const VALIDATION_LAYERS: Extensions<1> = Extensions([c"VK_LAYER_KHRONOS_validation"]);
 const EXTENSIONS: Extensions<3> = Extensions([vk::KHR_SURFACE_NAME, vk::EXT_DEBUG_UTILS_NAME, vk::KHR_WIN32_SURFACE_NAME]);
@@ -64,94 +36,7 @@ unsafe extern "system" fn vulkan_debug_callback(
     vk::FALSE
 }
 
-pub struct VkApp
-{
-    _entry:             Entry, // For loading vulkan, must have same lifetime as struct
-    instance:           Instance,
-    debug_utils_loader: debug_utils::Instance,
-    debug_callback:     vk::DebugUtilsMessengerEXT,
-    physical_device:    SupportedPhysicalDevice,
-    surface:            presentation::Surface,
-    device:             ash::Device,
-    graphics_queue:     vk::Queue,
-    present_queue:      vk::Queue,
-    swapchain:          presentation::Swapchain,
-}
-
-impl Drop for VkApp
-{
-    fn drop(&mut self)
-    {
-        println!("Cleaning up");
-        unsafe {
-            for &swapchain_image_view in &self.swapchain.image_views {
-                self.device.destroy_image_view(swapchain_image_view, None);
-            }
-            self.swapchain
-                .swapchain_device
-                .destroy_swapchain(self.swapchain.vk_swapchain, None);
-            self.device.destroy_device(None);
-            self.surface.loader.destroy_surface(self.surface.vk_surface, None);
-            self.debug_utils_loader
-                .destroy_debug_utils_messenger(self.debug_callback, None);
-            self.instance.destroy_instance(None);
-        }
-    }
-}
-
-impl VkApp
-{
-    pub fn new(
-        hwnd: &windows::Win32::Foundation::HWND, h_instance: &windows::Win32::Foundation::HINSTANCE,
-    ) -> Result<Self, VkError>
-    {
-        //let entry = unsafe { Entry::load().unwrap() };
-        let entry = Entry::linked(); // Dev only
-        let instance = create_instance(&entry)?;
-        let (debug_utils_loader, debug_callback) = create_debug_messenger(&entry, &instance)?;
-        let (surface_loader, vk_surface) = presentation::create_surface(&entry, &instance, hwnd, h_instance)?;
-        // Just get the first device
-        let (physical_device, surface_settings) = match get_physical_devices(&instance, &surface_loader, vk_surface)?.get(0)
-        {
-            Some((physical_device, surface_settings)) => {
-                println!("Selected device {}", physical_device.device_name);
-                (physical_device.to_owned(), surface_settings.to_owned())
-            }
-            None => return Err("No supported devices".into()),
-        };
-        let device = create_logical_device(&instance, &physical_device)?;
-
-        let mut surface = presentation::Surface {
-            loader: surface_loader,
-            vk_surface,
-            settings: surface_settings,
-        };
-
-        let (graphics_queue, present_queue) = unsafe {
-            (
-                device.get_device_queue(physical_device.graphics_family_index, 0),
-                device.get_device_queue(physical_device.present_family_index, 0),
-            )
-        };
-
-        let swapchain = presentation::create_swapchain(&instance, &device, &physical_device, &surface)?;
-
-        Ok(Self {
-            _entry: entry,
-            instance,
-            debug_utils_loader,
-            debug_callback,
-            surface,
-            physical_device,
-            device,
-            graphics_queue,
-            present_queue,
-            swapchain,
-        })
-    }
-}
-
-fn create_instance(entry: &Entry) -> Result<Instance, VkError>
+pub fn create_instance(entry: &Entry) -> Result<Instance>
 {
     let app_name = CString::new(project::APP_NAME).unwrap();
     let engine_name = CString::new("No Engine").unwrap();
@@ -182,9 +67,9 @@ fn create_instance(entry: &Entry) -> Result<Instance, VkError>
     Ok(unsafe { entry.create_instance(&instance_info, None) }?)
 }
 
-fn create_debug_messenger(
+pub fn create_debug_messenger(
     entry: &Entry, instance: &Instance,
-) -> Result<(debug_utils::Instance, vk::DebugUtilsMessengerEXT), VkError>
+) -> Result<(debug_utils::Instance, vk::DebugUtilsMessengerEXT)>
 {
     let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
         .message_severity(
@@ -212,9 +97,9 @@ pub struct SupportedPhysicalDevice
     pub present_family_index:  u32,
 }
 
-fn get_physical_devices(
+pub fn get_physical_devices(
     instance: &Instance, surface_loader: &khr::surface::Instance, surface: vk::SurfaceKHR,
-) -> Result<Vec<(SupportedPhysicalDevice, SurfaceSettings)>, VkError>
+) -> Result<Vec<(SupportedPhysicalDevice, SurfaceSettings)>>
 {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }?;
     let mut supported_devices: Vec<(SupportedPhysicalDevice, SurfaceSettings)> = Vec::new();
@@ -348,7 +233,7 @@ fn get_queue_create_infos<'a>(queue_indices: Vec<u32>) -> Vec<vk::DeviceQueueCre
         .collect()
 }
 
-fn create_logical_device(instance: &Instance, physical_device: &SupportedPhysicalDevice) -> Result<ash::Device, VkError>
+pub fn create_logical_device(instance: &Instance, physical_device: &SupportedPhysicalDevice) -> Result<ash::Device>
 {
     let queue_create_infos = get_queue_create_infos(vec![
         physical_device.graphics_family_index,

@@ -1,4 +1,5 @@
-use crate::graphics::device::{SupportedPhysicalDevice, VkError};
+use crate::graphics::device::SupportedPhysicalDevice;
+use crate::graphics::vk_app::{GraphicsError, Result};
 use crate::project;
 use ash::{khr, vk, Device, Entry, Instance};
 
@@ -12,7 +13,7 @@ pub struct Surface
 pub fn create_surface(
     entry: &Entry, instance: &Instance, hwnd: &windows::Win32::Foundation::HWND,
     h_instance: &windows::Win32::Foundation::HINSTANCE,
-) -> Result<(khr::surface::Instance, vk::SurfaceKHR), VkError>
+) -> Result<(khr::surface::Instance, vk::SurfaceKHR)>
 {
     let surface_info: vk::Win32SurfaceCreateInfoKHR = vk::Win32SurfaceCreateInfoKHR::default()
         .hwnd(hwnd.0 as isize)
@@ -38,7 +39,7 @@ pub struct SurfaceSettings
 
 pub fn get_surface_settings(
     physical_device: vk::PhysicalDevice, surface_loader: &khr::surface::Instance, surface: vk::SurfaceKHR,
-) -> Result<SurfaceSettings, VkError>
+) -> Result<SurfaceSettings>
 {
     let surface_capabilities = unsafe { surface_loader.get_physical_device_surface_capabilities(physical_device, surface) }?;
     let mut surface_extent = surface_capabilities.current_extent;
@@ -54,7 +55,9 @@ pub fn get_surface_settings(
             surface_format.format == vk::Format::B8G8R8A8_SRGB
                 && surface_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         })
-        .ok_or("Device does not support correct surface format")?
+        .ok_or(GraphicsError::DeviceError(String::from(
+            "Device does not support correct surface format",
+        )))?
         .to_owned();
 
     let supported_present_modes =
@@ -77,7 +80,11 @@ pub fn get_surface_settings(
                 println!("Failed to find MAILBOX, using FIFO present mode");
                 present_mode
             }
-            None => return Err("Failed to find acceptable supported present mode".into()),
+            None => {
+                return Err(GraphicsError::DeviceError(String::from(
+                    "Failed to find acceptable supported present mode",
+                )))
+            }
         },
     }
     .to_owned();
@@ -94,12 +101,26 @@ pub struct Swapchain
 {
     pub swapchain_device: khr::swapchain::Device,
     pub vk_swapchain:     vk::SwapchainKHR,
+    pub extent:           vk::Extent2D,
     pub image_views:      Vec<vk::ImageView>,
+}
+
+impl Swapchain
+{
+    pub fn cleanup(&self, device: &ash::Device)
+    {
+        unsafe {
+            for &swapchain_image_view in &self.image_views {
+                device.destroy_image_view(swapchain_image_view, None);
+            }
+            self.swapchain_device.destroy_swapchain(self.vk_swapchain, None);
+        }
+    }
 }
 
 pub fn create_swapchain(
     instance: &Instance, device: &Device, physical_device: &SupportedPhysicalDevice, surface: &Surface,
-) -> Result<Swapchain, VkError>
+) -> Result<Swapchain>
 {
     let mut image_count = surface.settings.capabilities.min_image_count + 1;
     if surface.settings.capabilities.max_image_count > 0 && image_count > surface.settings.capabilities.max_image_count {
@@ -127,16 +148,30 @@ pub fn create_swapchain(
             .queue_family_indices(&queue_family_indices);
     }
 
+    let extent = if surface.settings.extent.width != u32::MAX {
+        surface.settings.extent
+    } else {
+        let width = project::WINDOW_WIDTH.unsigned_abs().clamp(
+            surface.settings.capabilities.min_image_extent.width,
+            surface.settings.capabilities.max_image_extent.width,
+        );
+        let height = project::WINDOW_HEIGHT.unsigned_abs().clamp(
+            surface.settings.capabilities.min_image_extent.height,
+            surface.settings.capabilities.max_image_extent.height,
+        );
+        vk::Extent2D { width, height }
+    };
+
     let swapchain_device = khr::swapchain::Device::new(instance, device);
     let vk_swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
     let image_views = create_swapchain_image_views(device, &swapchain_device, vk_swapchain, &surface.settings)?;
-    Ok(Swapchain { swapchain_device, vk_swapchain, image_views })
+    Ok(Swapchain { swapchain_device, vk_swapchain, extent, image_views })
 }
 
 fn create_swapchain_image_views(
     device: &Device, swapchain_device: &khr::swapchain::Device, vk_swapchain: vk::SwapchainKHR,
     surface_settings: &SurfaceSettings,
-) -> Result<Vec<vk::ImageView>, VkError>
+) -> Result<Vec<vk::ImageView>>
 {
     let swapchain_images = unsafe { swapchain_device.get_swapchain_images(vk_swapchain) }?;
     let mut swapchain_image_views: Vec<vk::ImageView> = Vec::new();

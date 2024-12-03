@@ -91,7 +91,7 @@ extern "system" fn wWinMain(h_instance: HINSTANCE, _h_prev_instance: HINSTANCE, 
 
         let _ = ShowWindow(hwnd, SHOW_WINDOW_CMD(n_cmd_show));
 
-        let _vk_app: graphics::device::VkApp = match graphics::device::VkApp::new(&hwnd, &h_instance) {
+        let _vk_app: graphics::vk_app::VkApp = match graphics::vk_app::VkApp::new(&hwnd, &h_instance) {
             Ok(vk_app) => vk_app,
             Err(e) => {
                 message_box("Vulkan Creation Error", e.to_string().as_str());
