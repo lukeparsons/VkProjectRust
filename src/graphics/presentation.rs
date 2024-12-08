@@ -1,4 +1,5 @@
 use crate::graphics::device::SupportedPhysicalDevice;
+use crate::graphics::pipeline;
 use crate::graphics::vk_app::{GraphicsError, Result};
 use crate::project;
 use ash::{khr, vk, Device, Entry, Instance};
@@ -21,9 +22,11 @@ pub fn create_surface(
 
     let win32_surface_instance = khr::win32_surface::Instance::new(entry, instance);
 
-    let surface = unsafe { win32_surface_instance.create_win32_surface(&surface_info, None) }?;
-
     let surface_loader = khr::surface::Instance::new(entry, instance);
+
+    // TODO: win32_surface_instance.get_physical_device_win32_presentation_support()
+
+    let surface = unsafe { win32_surface_instance.create_win32_surface(&surface_info, None) }?;
 
     Ok((surface_loader, surface))
 }
@@ -103,6 +106,7 @@ pub struct Swapchain
     pub vk_swapchain:     vk::SwapchainKHR,
     pub extent:           vk::Extent2D,
     pub image_views:      Vec<vk::ImageView>,
+    pub framebuffers:     Vec<vk::Framebuffer>,
 }
 
 impl Swapchain
@@ -110,11 +114,33 @@ impl Swapchain
     pub fn cleanup(&self, device: &ash::Device)
     {
         unsafe {
+            for &swapchain_framebuffer in &self.framebuffers {
+                device.destroy_framebuffer(swapchain_framebuffer, None);
+            }
             for &swapchain_image_view in &self.image_views {
                 device.destroy_image_view(swapchain_image_view, None);
             }
             self.swapchain_device.destroy_swapchain(self.vk_swapchain, None);
         }
+    }
+
+    pub fn create_framebuffers(&mut self, device: &ash::Device, pipeline: &pipeline::Pipeline) -> Result<()>
+    {
+        for &image_view in &self.image_views {
+            let attachments: [vk::ImageView; 1] = [image_view];
+
+            let framebuffer_create_info = vk::FramebufferCreateInfo::default()
+                .render_pass(pipeline.render_pass)
+                .attachments(&attachments)
+                .width(self.extent.width)
+                .height(self.extent.height)
+                .layers(1);
+
+            self.framebuffers
+                .push(unsafe { device.create_framebuffer(&framebuffer_create_info, None) }?);
+        }
+
+        Ok(())
     }
 }
 
@@ -132,13 +158,15 @@ pub fn create_swapchain(
         .min_image_count(image_count)
         .image_format(surface.settings.format.format)
         .image_color_space(surface.settings.format.color_space)
+        .image_extent(surface.settings.extent)
         .image_array_layers(1)
         .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
         .pre_transform(surface.settings.capabilities.current_transform) // No transforms
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE) // Ignore alpha channel (TODO: problem?)
         .present_mode(surface.settings.present_mode)
         .clipped(true)
-        .image_extent(surface.settings.extent);
+        .old_swapchain(vk::SwapchainKHR::null()) // TODO: will have to modify if swapchain invalidated
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE);
 
     let queue_family_indices = [physical_device.graphics_family_index, physical_device.present_family_index];
     if physical_device.graphics_family_index != physical_device.present_family_index {
@@ -165,7 +193,13 @@ pub fn create_swapchain(
     let swapchain_device = khr::swapchain::Device::new(instance, device);
     let vk_swapchain = unsafe { swapchain_device.create_swapchain(&swapchain_create_info, None) }?;
     let image_views = create_swapchain_image_views(device, &swapchain_device, vk_swapchain, &surface.settings)?;
-    Ok(Swapchain { swapchain_device, vk_swapchain, extent, image_views })
+    Ok(Swapchain {
+        swapchain_device,
+        vk_swapchain,
+        extent,
+        image_views,
+        framebuffers: Vec::new(),
+    })
 }
 
 fn create_swapchain_image_views(

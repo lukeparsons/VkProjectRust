@@ -203,6 +203,11 @@ pub fn get_physical_devices(
             }
         };
 
+        let physical_device_features = unsafe { instance.get_physical_device_features(physical_device) };
+        if physical_device_features.sampler_anisotropy == vk::FALSE {
+            eprintln!("Device {} does not support sampler anisotropy, skipping", device_name);
+        }
+
         supported_devices.push((
             SupportedPhysicalDevice {
                 vk_physical_device: physical_device,
@@ -239,7 +244,7 @@ pub fn create_logical_device(instance: &Instance, physical_device: &SupportedPhy
         physical_device.graphics_family_index,
         physical_device.present_family_index,
     ]);
-    let device_features = vk::PhysicalDeviceFeatures::default();
+    let device_features = vk::PhysicalDeviceFeatures::default().sampler_anisotropy(true);
 
     let device_extension_ptrs = DEVICE_EXTENSIONS.as_ptrs();
     let device_info = vk::DeviceCreateInfo::default()

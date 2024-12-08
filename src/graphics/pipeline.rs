@@ -1,17 +1,17 @@
 use crate::graphics::presentation::{SurfaceSettings, Swapchain};
-use crate::graphics::vk_app::{IOResultToResultExt, Result};
-use crate::graphics::{presentation, vk_app};
+use crate::graphics::{
+    presentation,
+    vk_app::{self, IOResultToResultExt, Result},
+};
 use ash::vk;
-use std::fs::File;
-use std::io::Read;
 use std::mem::offset_of;
 
 pub(crate) struct Pipeline
 {
-    render_pass:           vk::RenderPass,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    pipeline_layout:       vk::PipelineLayout,
-    graphics_pipeline:     vk::Pipeline,
+    pub render_pass:           vk::RenderPass,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+    pub pipeline_layout:       vk::PipelineLayout,
+    pub graphics_pipeline:     vk::Pipeline,
 }
 
 impl Pipeline
@@ -132,13 +132,11 @@ fn create_pipeline_layout(device: &ash::Device, descriptor_set_layout: vk::Descr
 
 pub fn create_shader_module(device: &ash::Device, path: String) -> Result<vk::ShaderModule>
 {
-    let mut file = File::open(&path).to_result(path.as_str())?;
+    let mut file = std::fs::File::open(&path).to_result(path.as_str())?;
 
-    let mut buf: Vec<u8> = Vec::new();
-    let _ = file.read_to_end(&mut buf).to_result(path.as_str())?;
-    let buf32: Vec<u32> = buf.iter().map(|&char| char as u32).collect();
+    let code = ash::util::read_spv(&mut file).to_result(path.as_str())?;
 
-    let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(buf32.as_slice());
+    let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(code.as_slice());
     Ok(unsafe { device.create_shader_module(&shader_module_create_info, None) }?)
 }
 
@@ -186,7 +184,7 @@ fn create_graphics_pipeline(
         .rasterizer_discard_enable(false) // Enable rasterizer
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::BACK) // Cull back faces
+        .cull_mode(vk::CullModeFlags::NONE) // TODO: Cull back faces
         .front_face(vk::FrontFace::CLOCKWISE); // Specify vertex order for faces
 
     // Setup multisampling (used for anti-aliasing) - currently disabled
@@ -230,7 +228,7 @@ fn create_graphics_pipeline(
 
     let binding_description = vk::VertexInputBindingDescription::default()
         .binding(0)
-        .stride(size_of::<vk_app::Vertex>() as u32) // TODO: Size of vertex
+        .stride(size_of::<vk_app::Vertex>() as u32)
         .input_rate(vk::VertexInputRate::VERTEX);
 
     let attribute_descriptions: [vk::VertexInputAttributeDescription; 3] = [
@@ -238,17 +236,17 @@ fn create_graphics_pipeline(
             .binding(0)
             .location(0)
             .format(vk::Format::R32G32_SFLOAT) // vec2
-            .offset(offset_of!(vk_app::Vertex, position) as u32), // TODO
+            .offset(offset_of!(vk_app::Vertex, position) as u32),
         vk::VertexInputAttributeDescription::default()
             .binding(0)
             .location(1)
             .format(vk::Format::R32G32B32_SFLOAT) // vec3
-            .offset(offset_of!(vk_app::Vertex, colour) as u32), // TODO
+            .offset(offset_of!(vk_app::Vertex, colour) as u32),
         vk::VertexInputAttributeDescription::default()
             .binding(0)
             .location(2)
             .format(vk::Format::R32G32_SFLOAT) // vec2
-            .offset(offset_of!(vk_app::Vertex, tex_coord) as u32), // TODO
+            .offset(offset_of!(vk_app::Vertex, tex_coord) as u32),
     ];
 
     let binding_descriptions = [binding_description];
@@ -263,12 +261,12 @@ fn create_graphics_pipeline(
 
     let vertex_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::VERTEX)
-        .module(vertex_shader_module) // TODO
+        .module(vertex_shader_module)
         .name(&c"main");
 
     let fragment_shader_stage_create_info = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(fragment_shader_module) // TODO
+        .module(fragment_shader_module)
         .name(&c"main");
 
     let shader_stages = [vertex_shader_stage_create_info, fragment_shader_stage_create_info];
@@ -297,8 +295,8 @@ fn create_graphics_pipeline(
         device.destroy_shader_module(fragment_shader_module, None)
     };
 
-    Ok((graphics_pipelines
+    Ok(graphics_pipelines
         .get(0)
-        .expect("Error getting first pipeline - should not happen!"))
+        .expect("Error getting first pipeline - should not happen!")
     .to_owned())
 }

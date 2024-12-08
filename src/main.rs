@@ -1,5 +1,6 @@
 #![no_main]
 mod graphics;
+mod maths;
 
 use windows::{core::*, Win32::Foundation::*, Win32::System::Console::*, Win32::UI::WindowsAndMessaging::*};
 
@@ -91,7 +92,7 @@ extern "system" fn wWinMain(h_instance: HINSTANCE, _h_prev_instance: HINSTANCE, 
 
         let _ = ShowWindow(hwnd, SHOW_WINDOW_CMD(n_cmd_show));
 
-        let _vk_app: graphics::vk_app::VkApp = match graphics::vk_app::VkApp::new(&hwnd, &h_instance) {
+        let mut vk_app: graphics::vk_app::VkApp = match graphics::vk_app::VkApp::new(&hwnd, &h_instance) {
             Ok(vk_app) => vk_app,
             Err(e) => {
                 message_box("Vulkan Creation Error", e.to_string().as_str());
@@ -103,6 +104,10 @@ extern "system" fn wWinMain(h_instance: HINSTANCE, _h_prev_instance: HINSTANCE, 
         while GetMessageW(&mut msg, hwnd, 0, 0).0 > 0 {
             let _ = TranslateMessage(&mut msg);
             DispatchMessageW(&mut msg);
+            if let Err(err) = vk_app.draw_frame() {
+                message_box("Error", err.to_string().as_str());
+                return -1;
+            }
         }
     }
     1
