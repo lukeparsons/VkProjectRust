@@ -1,37 +1,33 @@
-use crate::graphics::buffers::{create_descriptor_pool, create_descriptor_sets};
-use crate::graphics::presentation::create_swapchain;
-use crate::graphics::{buffers, device, drawing, pipeline, presentation, textures};
-use ash::ext::debug_utils;
-use ash::{vk, Entry, Instance};
-use std::error::Error;
-use std::{ffi, fmt, io};
+use crate::graphics::*;
+use crate::{log, project};
+use ash::vk;
 
 #[repr(C)]
 pub struct Vertex
 {
-    pub position:  [f32; 2],
+    pub position:  [f32; 3],
     pub colour:    [f32; 3],
     pub tex_coord: [f32; 2],
 }
 
 pub const VERTICES: [Vertex; 4] = [
     Vertex {
-        position:  [-0.5, -0.5],
+        position:  [-0.5, -0.5, 0.0],
         colour:    [1.0, 0.0, 0.0],
         tex_coord: [1.0, 0.0],
     },
     Vertex {
-        position:  [0.5, -0.5],
+        position:  [0.5, -0.5, 0.0],
         colour:    [0.0, 1.0, 0.0],
         tex_coord: [0.0, 0.0],
     },
     Vertex {
-        position:  [0.5, 0.5],
+        position:  [0.5, 0.5, 0.0],
         colour:    [0.0, 0.0, 1.0],
         tex_coord: [0.0, 1.0],
     },
     Vertex {
-        position:  [-0.5, 0.5],
+        position:  [-0.5, 0.5, 0.0],
         colour:    [1.0, 1.0, 1.0],
         tex_coord: [1.0, 1.0],
     },
@@ -39,70 +35,13 @@ pub const VERTICES: [Vertex; 4] = [
 
 pub const INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
-pub type Result<T> = std::result::Result<T, GraphicsError>;
-
-#[derive(Debug)]
-pub enum GraphicsError
-{
-    VkError(vk::Result),
-    IoError(std::io::Error, String),
-    DeviceError(String),
-}
-
-impl fmt::Display for GraphicsError
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result
-    {
-        match *self {
-            GraphicsError::VkError(ref err) => {
-                f.write_fmt(format_args!("Vulkan Error, Code {}: {}", err.as_raw(), err.to_string()))
-            }
-            GraphicsError::IoError(ref err, ref file) => {
-                f.write_fmt(format_args!("IO Error: {} for file {}", err.to_string(), file))
-            }
-            GraphicsError::DeviceError(ref str) => f.write_fmt(format_args!("Device Error: {}", str)),
-        }
-    }
-}
-
-impl Error for GraphicsError
-{
-    fn source(&self) -> Option<&(dyn Error + 'static)>
-    {
-        match *self {
-            GraphicsError::VkError(ref err) => Some(err),
-            GraphicsError::IoError(ref err, _) => Some(err),
-            GraphicsError::DeviceError(_) => None,
-        }
-    }
-}
-
-impl From<vk::Result> for GraphicsError
-{
-    fn from(vk_result: vk::Result) -> Self
-    {
-        let vk_error = vk_result
-            .result()
-            .expect_err("Trying to unwrap successful Vulkan Result as error");
-        GraphicsError::VkError(vk_error)
-    }
-}
-
-pub trait IOResultToResultExt<T>
-{
-    fn to_result(self, path: &str) -> Result<T>;
-}
-
-impl<T> IOResultToResultExt<T> for io::Result<T>
-{
-    fn to_result(self, path: &str) -> Result<T> { self.map_err(|err| GraphicsError::IoError(err, path.to_string())) }
-}
+pub type Result<T> = std::result::Result<T, errors::VkAppError>;
 
 pub struct VkApp
 {
-    _entry:                 Entry, // For loading vulkan, must have same lifetime as struct
-    instance:               Instance,
-    debug_utils_loader:     debug_utils::Instance,
+    _entry:                 ash::Entry, // For loading vulkan, must have same lifetime as struct
+    instance:               ash::Instance,
+    debug_utils_loader:     ash::ext::debug_utils::Instance,
     debug_callback:         vk::DebugUtilsMessengerEXT,
     physical_device:        device::SupportedPhysicalDevice,
     surface:                presentation::Surface,
@@ -119,11 +58,12 @@ pub struct VkApp
     vertex_buffer:          buffers::Buffer,
     index_buffer:           buffers::Buffer,
     uniform_buffers:        Vec<buffers::Buffer>,
-    uniform_buffers_mapped: Vec<*mut ffi::c_void>,
+    uniform_buffers_mapped: Vec<*mut std::ffi::c_void>,
     descriptor_pool:        vk::DescriptorPool,
     descriptor_sets:        Vec<vk::DescriptorSet>,
     command_buffers:        Vec<vk::CommandBuffer>,
-    sync_objects:           drawing::SyncObjects,
+    sync_objects:           commands::SyncObjects,
+    // current_frame keeps track of the index to use the right objects (command buffers, semaphores)
     current_frame:          usize,
 }
 
@@ -131,7 +71,7 @@ impl Drop for VkApp
 {
     fn drop(&mut self)
     {
-        println!("Cleaning up");
+        log!("Cleaning up VkApp");
         unsafe {
             if self.device.handle() != vk::Device::null() {
                 self.device.device_wait_idle().unwrap(); // TODO should be unwrap?
@@ -162,6 +102,7 @@ impl Drop for VkApp
                 .destroy_debug_utils_messenger(self.debug_callback, None);
             self.instance.destroy_instance(None);
         }
+        log!("Complete");
     }
 }
 
@@ -169,27 +110,25 @@ impl VkApp
 {
     pub fn new(hwnd: &windows::Win32::Foundation::HWND, h_instance: &windows::Win32::Foundation::HINSTANCE) -> Result<Self>
     {
-        //let entry = unsafe { Entry::load().unwrap() };
-        let entry = Entry::linked(); // Dev only
+        //let entry = unsafe { ash::Entry::load().unwrap() };
+        let entry = ash::Entry::linked(); // Dev only
         let instance = device::create_instance(&entry)?;
         let (debug_utils_loader, debug_callback) = device::create_debug_messenger(&entry, &instance)?;
         let (surface_loader, vk_surface) = presentation::create_surface(&entry, &instance, hwnd, h_instance)?;
+
         // Just get the first device
-        let (physical_device, surface_settings) =
+        let (physical_device, surface_details) =
             match device::get_physical_devices(&instance, &surface_loader, vk_surface)?.get(0) {
-                Some((physical_device, surface_settings)) => {
-                    println!("Selected device {}", physical_device.device_name);
-                    (physical_device.to_owned(), surface_settings.to_owned())
+                Some((physical_device, surface_details)) => {
+                    log!("Selected device {}", physical_device.device_name);
+                    (physical_device.to_owned(), surface_details.to_owned())
                 }
-                None => return Err(GraphicsError::DeviceError(String::from("No supported devices"))),
+                None => return Err(errors::VkAppError::DeviceError(String::from("No supported devices"))),
             };
+
         let device = device::create_logical_device(&instance, &physical_device)?;
 
-        let surface = presentation::Surface {
-            loader: surface_loader,
-            vk_surface,
-            settings: surface_settings,
-        };
+        let surface = presentation::Surface { loader: surface_loader, vk_surface, details: surface_details };
 
         let (graphics_queue, present_queue) = unsafe {
             (
@@ -199,11 +138,10 @@ impl VkApp
         };
 
         let mut swapchain = presentation::create_swapchain(&instance, &device, &physical_device, &surface)?;
-        // TODO: move descriptor_set_layout out of pipeline
-        let pipeline = pipeline::create_pipeline(&device, surface_settings, &swapchain)?;
+        let pipeline = pipeline::create_pipeline(&device, swapchain.settings)?;
         swapchain.create_framebuffers(&device, &pipeline)?;
 
-        let command_pool = drawing::create_command_pool(&device, physical_device.graphics_family_index)?;
+        let command_pool = commands::create_command_pool(&device, physical_device.graphics_family_index)?;
 
         let (texture_image, texture_image_memory) = textures::create_texture_image(
             &instance,
@@ -237,9 +175,9 @@ impl VkApp
         let (uniform_buffers, uniform_buffers_mapped) =
             buffers::create_uniform_buffers(&instance, physical_device.vk_physical_device, &device)?;
 
-        let descriptor_pool = create_descriptor_pool(&device)?;
+        let descriptor_pool = buffers::create_descriptor_pool(&device)?;
 
-        let descriptor_sets = create_descriptor_sets(
+        let descriptor_sets = buffers::create_descriptor_sets(
             &device,
             descriptor_pool,
             &uniform_buffers,
@@ -248,9 +186,9 @@ impl VkApp
             texture_sampler,
         )?;
 
-        let command_buffers = drawing::create_command_buffers(&device, command_pool)?;
+        let command_buffers = commands::create_command_buffers(&device, command_pool)?;
 
-        let sync_objects = drawing::create_sync_objects(&device)?;
+        let sync_objects = commands::create_sync_objects(&device)?;
 
         Ok(Self {
             _entry: entry,
@@ -284,37 +222,36 @@ impl VkApp
     pub fn draw_frame(&mut self) -> Result<()>
     {
         unsafe {
-            // Wait until previous frame has finished
+            // Wait until the current previous frame has finished
             self.device
                 .wait_for_fences(&[self.sync_objects.in_flight_fences[self.current_frame]], true, u64::MAX)?;
 
+            // Acquire an image from the swapchain
             let (image_index, suboptimal_surface) = match self.swapchain.swapchain_device.acquire_next_image(
                 self.swapchain.vk_swapchain,
-                u64::MAX,
-                self.sync_objects.image_available_semaphores[self.current_frame],
+                u64::MAX, // Disable timeout for images to become available
+                self.sync_objects.image_available_semaphores[self.current_frame], // Synchronization object for when presentation execution has finished using the image
                 vk::Fence::null(),
             ) {
                 Ok((image_index, suboptimal_surface)) => (image_index, suboptimal_surface),
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                    // Swapchain has become incompatible with surface and can no longer be used for rendering, must be recreated and try again in next draw
                     self.recreate_swapchain()?;
                     return Ok(());
                 }
                 Err(err) => return Err(err.into()),
             };
 
-            if suboptimal_surface {
-                eprintln!("Warning: surface is suboptimal for the surface");
-            }
-
             buffers::update_uniform_buffer(&self.uniform_buffers_mapped, self.current_frame);
 
+            // Only reset the fence if we are sure we are submitting work to prevent deadlock
             self.device
                 .reset_fences(&[self.sync_objects.in_flight_fences[self.current_frame]])?;
 
             self.device
                 .reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty())?;
 
-            drawing::record_command_buffer(
+            commands::record_command_buffer(
                 &self.device,
                 self.command_buffers[self.current_frame],
                 image_index,
@@ -325,8 +262,11 @@ impl VkApp
                 vec![self.descriptor_sets[self.current_frame]],
             )?;
 
+            // Semaphores to wait on before execution begins
             let wait_semaphores: [vk::Semaphore; 1] = [self.sync_objects.image_available_semaphores[self.current_frame]];
+            // Which stage of the pipeline to wait on. We wait at the point of writing colours to the image until its available
             let wait_stages: [vk::PipelineStageFlags; 1] = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+            // Which semaphores to signal once the command buffer has finished execution
             let signal_semaphores: [vk::Semaphore; 1] = [self.sync_objects.render_finished_semaphores[self.current_frame]];
 
             let command_buffers = [self.command_buffers[self.current_frame]];
@@ -343,6 +283,7 @@ impl VkApp
                 self.sync_objects.in_flight_fences[self.current_frame],
             )?;
 
+            // Finally, submit the result of the render pass back to the swapchain for presentation
             let image_indices = [image_index];
             let swapchains = [self.swapchain.vk_swapchain];
             let present_info = vk::PresentInfoKHR::default()
@@ -353,28 +294,50 @@ impl VkApp
             self.swapchain
                 .swapchain_device
                 .queue_present(self.present_queue, &present_info)?;
+
+            // A suboptimal surface is considered a success code and we have acquired an image successfully
+            // So recreate it after presenting the image
+            if suboptimal_surface {
+                log!("Suboptimal surface");
+                self.recreate_swapchain()?;
+            }
         }
 
-        self.current_frame = (self.current_frame + 1) % drawing::MAX_FRAMES_IN_FLIGHT as usize;
+        // Advance the frame, looping back round after every MAX_FRAMES_IN_FLIGHT frames
+        self.current_frame = (self.current_frame + 1) % commands::MAX_FRAMES_IN_FLIGHT as usize;
 
         Ok(())
     }
 
+    /// The window surface can change such that the swapchain is no longer compatible with it (e.g a window resize)
+    ///
+    /// When these events occur, we should recreate the swapchain so it is compatible with the surface
     pub fn recreate_swapchain(&mut self) -> Result<()>
     {
-        println!("Recreating swapchain");
+        log!("Recreating swapchain");
 
+        log!(
+            "Window Dimensions: Width {}, Height {}",
+            project::WINDOW_WIDTH.get(),
+            project::WINDOW_HEIGHT.get()
+        );
+
+        // Wait for in process execution to finish first
         unsafe { self.device.device_wait_idle()? };
 
-        self.surface.settings = presentation::get_surface_settings(
-            self.physical_device.vk_physical_device,
-            &self.surface.loader,
-            self.surface.vk_surface,
-        )?;
-
+        // Delete the previous swapchain
         self.swapchain.cleanup(&self.device);
 
-        self.swapchain = create_swapchain(&self.instance, &self.device, &self.physical_device, &self.surface)?;
+        // Update the surface details with the new surface
+        self.surface.details = presentation::get_surface_details(
+            self.physical_device.vk_physical_device,
+            self.surface.vk_surface,
+            &self.surface.loader,
+        )?;
+
+        // Create the new swapchain
+        self.swapchain = presentation::create_swapchain(&self.instance, &self.device, &self.physical_device, &self.surface)?;
+        self.swapchain.create_framebuffers(&self.device, &self.pipeline)?;
 
         Ok(())
     }
